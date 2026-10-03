@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>&#8203;</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14110f; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+
+/* ---------- renderer ---------- */
+const RT_W = 1600, RT_H = 900;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// Two render targets, ping-ponged: the laptop screen samples last frame's image.
+const makeRT = () => {
+  const rt = new THREE.WebGLRenderTarget(RT_W, RT_H, { samples: 4, generateMipmaps: true,
+    minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.LinearFilter });
+  rt.texture.colorSpace = THREE.SRGBColorSpace;
+  rt.texture.anisotropy = 8;
+  return rt;
+};
+let rtRead = makeRT(), rtWrite = makeRT();
+
+/* ---------- scene ---------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14110f);
+const camera = new THREE.PerspectiveCamera(40, RT_W / RT_H, 0.1, 50);
+
+const mat = (c, o = {}) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, metalness: 0, ...o });
+const box = (w, h, d, m, x = 0, y = 0, z = 0, parent = scene) => {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  mesh.position.set(x, y, z); mesh.castShadow = mesh.receiveShadow = true;
+  parent.add(mesh); return mesh;
+};
+
+// Room
+const wallM = mat(0xe8dfd2), floorM = mat(0x9a7a5a, { roughness: 0.6 }), ceilM = mat(0xf4efe8);
+const RW = 5, RH = 4.2, ZB = -3.2, ZF = 7;
+const floor = box(RW * 2, 0.1, ZF - ZB, floorM, 0, -0.05, (ZF + ZB) / 2);
+box(RW * 2, 0.1, ZF - ZB, ceilM, 0, RH + 0.05, (ZF + ZB) / 2);
+box(RW * 2, RH, 0.1, wallM, 0, RH / 2, ZB - 0.05);
+box(0.1, RH, ZF - ZB, mat(0xdcd0bf), -RW - 0.05, RH / 2, (ZF + ZB) / 2);
+box(0.1, RH, ZF - ZB, mat(0xdcd0bf), RW + 0.05, RH / 2, (ZF + ZB) / 2);
+box(RW * 2, 0.25, 0.06, mat(0xb9a98f), 0, 0.125, ZB + 0.03); // skirting
+// rug
+box(5.2, 0.02, 3.6, mat(0x4a5a6a), 0, 0.01, -0.2);
+box(4.8, 0.025, 3.2, mat(0x5a6e80), 0, 0.012, -0.2);
+
+// Window (back wall, left) with warm daylight
+const winG = new THREE.Group(); winG.position.set(-2.9, 2.5, ZB + 0.02); scene.add(winG);
+box(1.9, 1.6, 0.06, mat(0xf2ece2), 0, 0, 0, winG);
+box(1.7, 1.4, 0.04, new THREE.MeshBasicMaterial({ color: 0xbfe0f5 }), 0, 0, 0.03, winG);
+box(0.06, 1.4, 0.05, mat(0xf2ece2), 0, 0, 0.05, winG);
+box(1.7, 0.06, 0.05, mat(0xf2ece2), 0, 0, 0.05, winG);
+
+// Wall picture: pixel Clawd on a canvas
+const pic = document.createElement('canvas'); pic.width = pic.height = 64;
+{
+  const g = pic.getContext('2d'); g.fillStyle = '#2b2622'; g.fillRect(0, 0, 64, 64);
+  g.fillStyle = '#d97757';
+  g.fillRect(12, 22, 40, 22); g.fillRect(6, 28, 6, 8); g.fillRect(52, 28, 6, 8);
+  for (const x of [14, 22, 38, 46]) g.fillRect(x, 44, 4, 8);
+  g.fillStyle = '#1a1511'; g.fillRect(22, 28, 4, 8); g.fillRect(38, 28, 4, 8);
+}
+const picTex = new THREE.CanvasTexture(pic); picTex.colorSpace = THREE.SRGBColorSpace; picTex.magFilter = THREE.NearestFilter;
+const frame = new THREE.Group(); frame.position.set(2.9, 2.6, ZB + 0.03); scene.add(frame);
+box(1.3, 1.3, 0.05, mat(0x3a2e24), 0, 0, 0, frame);
+const pm = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 1.1), new THREE.MeshBasicMaterial({ map: picTex }));
+pm.position.z = 0.03; frame.add(pm);
+
+// Shelf + plant
+box(1.6, 0.06, 0.4, mat(0x6b4f3a), 3.6, 1.7, ZB + 0.25);
+for (const [i, c] of [0xc9573b, 0x5b7c99, 0xe0b04a, 0x7b9a6b].entries()) box(0.14, 0.4 - i * 0.03, 0.28, mat(c), 3.1 + i * 0.17, 1.93 - i * 0.015, ZB + 0.25);
+const plant = new THREE.Group(); plant.position.set(-4.0, 0, -1.8); scene.add(plant);
+{
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.24, 0.5, 14), mat(0xb5654a)); pot.position.y = 0.25; pot.castShadow = true; plant.add(pot);
+  const lm = mat(0x4f8a4a);
+  for (let i = 0; i < 9; i++) {
+    const l = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), lm);
+    const a = i * 2.4; l.position.set(Math.cos(a) * 0.28, 0.85 + (i % 3) * 0.3, Math.sin(a) * 0.28);
+    l.scale.set(1, 1.5, 0.5); l.rotation.y = -a; l.castShadow = true; plant.add(l);
+  }
+}
+
+// Desk
+const woodM = mat(0xb98a5e, { roughness: 0.55 }), darkWood = mat(0x7a5638);
+const DESK_Y = 0.95, DESK_Z = -0.05;
+box(3.6, 0.1, 1.9, woodM, 0, DESK_Y - 0.05, DESK_Z);
+for (const sx of [-1, 1]) for (const sz of [-1, 1]) box(0.12, DESK_Y - 0.1, 0.12, darkWood, sx * 1.65, (DESK_Y - 0.1) / 2, DESK_Z + sz * 0.8);
+box(3.3, 0.5, 0.06, darkWood, 0, DESK_Y - 0.4, DESK_Z - 0.85);
+
+// Chair
+box(1.4, 0.12, 1.1, mat(0x3b4a5a), 0, 0.72, -1.5);
+box(1.4, 1.8, 0.12, mat(0x3b4a5a), 0, 1.6, -2.1);
+box(0.1, 0.7, 0.1, mat(0x222), 0, 0.36, -1.5);
+box(1.0, 0.06, 1.0, mat(0x222), 0, 0.03, -1.5);
+
+// Lamp + mug on desk
+{
+  const lamp = new THREE.Group(); lamp.position.set(1.5, DESK_Y, -0.55); scene.add(lamp);
+  box(0.4, 0.04, 0.4, mat(0x2a2a2a), 0, 0.02, 0, lamp);
+  box(0.05, 0.9, 0.05, mat(0x2a2a2a), 0, 0.47, 0, lamp);
+  const shade = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.3, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0xf0a24a, side: THREE.DoubleSide, emissive: 0xf0a24a, emissiveIntensity: 0.6 }));
+  shade.position.set(0, 0.95, 0); shade.castShadow = true; lamp.add(shade);
+  const pl = new THREE.PointLight(0xffb866, 6, 5, 2); pl.position.set(0, 0.85, 0.05); lamp.add(pl);
+  const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.12, 0.2, 14), mat(0xf4f0e8)); mug.position.set(-1.35, DESK_Y + 0.1, 0.15); mug.castShadow = true; scene.add(mug);
+  box(0.05, 0.1, 0.04, mat(0xf4f0e8), -1.22, DESK_Y + 0.1, 0.15);
+}
+
+// Lights
+scene.add(new THREE.HemisphereLight(0xfff3e0, 0x8a7560, 1.5));
+const sun = new THREE.DirectionalLight(0xfff0d8, 2.2);
+sun.position.set(-4, 7, 5); sun.target.position.set(0, 1, -0.5);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: 1, far: 20 });
+sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.03;
+scene.add(sun, sun.target);
+const screenGlow = new THREE.PointLight(0x9fc8ff, 0, 4, 2); scene.add(screenGlow);
+
+/* ---------- mascot (Clawd) ---------- */
+const ORANGE = 0xd97757, DARKO = 0xb85f42;
+const clawd = new THREE.Group(); clawd.position.set(0, 0, -1.35); scene.add(clawd);
+const body = new THREE.Group(); body.position.y = 1.85; clawd.add(body);
+const bodyM = mat(ORANGE, { roughness: 0.7 }), shadeM = mat(DARKO, { roughness: 0.7 });
+box(1.6, 0.95, 0.8, bodyM, 0, 0, 0, body);
+box(1.6, 0.06, 0.82, shadeM, 0, -0.45, 0, body);
+const eyeM = new THREE.MeshStandardMaterial({ color: 0x15100d, roughness: 0.3 });
+const eyes = [-0.38, 0.38].map(x => box(0.14, 0.26, 0.03, eyeM, x, 0.08, 0.41, body));
+// legs (four short stubs, resting on the seat)
+for (const x of [-0.6, -0.2, 0.2, 0.6]) box(0.2, 0.5, 0.22, shadeM, x, -0.78, 0.08, body);
+
+// arms: shoulder pivot, stretchy stub pointing at a target, plus a hand block
+function makeArm(side) {
+  const pivot = new THREE.Group(); pivot.position.set(side * 0.78, -0.05, 0.15); body.add(pivot);
+  const seg = new THREE.Group(); pivot.add(seg);
+  const m = box(0.26, 0.24, 1, bodyM, 0, 0, 0.5, seg);
+  const hand = box(0.32, 0.26, 0.3, shadeM, 0, 0, 1, seg);
+  return { pivot, seg, m, hand, side };
+}
+const arms = [makeArm(-1), makeArm(1)];
+const tmpV = new THREE.Vector3(), tmpL = new THREE.Vector3();
+function aimArm(a, worldTarget) {
+  a.pivot.updateWorldMatrix(true, false);
+  const p = a.pivot.getWorldPosition(tmpV.set(0, 0, 0)).clone();
+  const dir = worldTarget.clone().sub(p); const len = dir.length();
+  // convert to body-local and orient the segment
+  const local = body.worldToLocal(worldTarget.clone());
+  a.seg.lookAt(local.sub(a.pivot.position).add(a.pivot.position));
+  const s = Math.max(len - 0.1, 0.2);
+  a.m.scale.z = s; a.m.position.z = s / 2; a.hand.position.z = s;
+}
+
+/* ---------- laptop ---------- */
+const lap = new THREE.Group(); scene.add(lap);
+const LAP_HOME = new THREE.Vector3(0, DESK_Y, -0.1);
+const alu = mat(0xc3c6cc, { metalness: 0.7, roughness: 0.35 });
+box(1.62, 0.06, 1.1, alu, 0, 0.03, 0, lap);
+// keyboard texture
+const kc = document.createElement('canvas'); kc.width = 512; kc.height = 300;
+{
+  const g = kc.getContext('2d'); g.fillStyle = '#26282c'; g.fillRect(0, 0, 512, 300);
+  g.fillStyle = '#3a3d43';
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 14; c++) g.fillRect(14 + c * 34.5, 14 + r * 36, 29, 30);
+  g.fillRect(100, 196, 300, 30);
+}
+const kt = new THREE.CanvasTexture(kc); kt.colorSpace = THREE.SRGBColorSpace;
+const kb = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.6), new THREE.MeshStandardMaterial({ map: kt, roughness: 0.6 }));
+kb.rotation.x = -Math.PI / 2; kb.position.set(0, 0.062, -0.12); kb.receiveShadow = true; lap.add(kb);
+box(0.5, 0.005, 0.3, mat(0xaaadb3), 0, 0.063, 0.33, lap);
+
+const lid = new THREE.Group(); lid.position.set(0, 0.06, 0.53); lid.rotation.x = 0.42; lap.add(lid);
+box(1.62, 0.92, 0.05, alu, 0, 0.46, 0, lid);
+// logo on the back of the lid
+box(0.2, 0.14, 0.01, new THREE.MeshStandardMaterial({ color: ORANGE, emissive: ORANGE, emissiveIntensity: 0.5 }), 0, 0.46, 0.03, lid);
+const screenMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false, map: rtRead.texture });
+const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.844), screenMat);
+screen.rotation.y = Math.PI; screen.position.set(0, 0.47, -0.032); lid.add(screen);
+// bezel
+box(1.58, 0.9, 0.004, mat(0x0c0c0e), 0, 0.47, -0.026, lid);
+const grabL = new THREE.Object3D(), grabR = new THREE.Object3D();
+lap.add(grabL, grabR);
+
+/* ---------- animation timeline ---------- */
+const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+const sm = (t, a, b) => ease(Math.min(Math.max((t - a) / (b - a), 0), 1));
+const LOOP = 12.2;
+const T = { typeEnd: 3.4, grabEnd: 4.4, turnEnd: 6.2, holdEnd: 8.9, backEnd: 10.7 };
+
+// camera poses
+const camA = { pos: new THREE.Vector3(0, 3.1, 5.2), look: new THREE.Vector3(0, 1.45, -0.5) };
+const camB = { pos: new THREE.Vector3(0, 3.0, 4.0), look: new THREE.Vector3(0, 1.5, 0.1) };
+
+const hT = [new THREE.Vector3(), new THREE.Vector3()];
+let lastTapSide = -1, tapBeat = -1;
+const sound = makeSound();
+
+function update(t, time) {
+  // phases (0..1 progress values)
+  const grab = sm(t, T.typeEnd, T.grabEnd);          // hands to sides
+  const turn = sm(t, T.grabEnd, T.turnEnd) - sm(t, T.holdEnd, T.backEnd); // 0 home -> 1 shown
+  const release = sm(t, T.backEnd, LOOP);             // hands back to keys
+  const hold = Math.max(0, grab - release);           // how much hands are on the sides
+  const rotP = sm(t, T.grabEnd, T.turnEnd) - sm(t, T.holdEnd, T.backEnd);
+
+  // laptop transform: rotate 180° about Y while lifting and sliding toward camera
+  const arc = Math.sin(Math.PI * Math.min(Math.max(rotP, 0), 1));
+  lap.position.set(LAP_HOME.x + rotP * 0.55, LAP_HOME.y + rotP * 0.28 + arc * 0.2, LAP_HOME.z + rotP * 0.45);
+  // the mascot scoots aside so the screen can be seen with it in frame
+  clawd.position.x = -rotP * 0.85; clawd.rotation.y = rotP * 0.15;
+  lap.rotation.y = rotP * Math.PI;
+  lap.scale.setScalar(1 + rotP * 0.22);
+  // lid tilts slightly toward viewer when shown
+  lid.rotation.x = 0.42 - rotP * 0.1;
+
+  // typing taps
+  const typing = 1 - hold;
+  const beat = time * 9;
+  const tapIdx = Math.floor(beat);
+  if (typing > 0.9 && tapIdx !== tapBeat) { tapBeat = tapIdx; sound.click(); }
+  const tapA = Math.pow(Math.max(0, Math.sin(beat * Math.PI)), 3);
+  const tapB = Math.pow(Math.max(0, Math.sin(beat * Math.PI + 1.9)), 3);
+  const wob = [Math.sin(time * 5.3) * 0.12, Math.cos(time * 4.1) * 0.12];
+
+  // hand targets: keyboard (typing) vs laptop sides (holding)
+  lap.updateWorldMatrix(true, true);
+  for (let i = 0; i < 2; i++) {
+    const s = i === 0 ? -1 : 1;
+    const key = new THREE.Vector3(s * (0.35 + wob[i] * 0.4), DESK_Y + 0.14 + (i ? tapB : tapA) * -0.05, -0.62 + wob[1 - i] * 0.3);
+    // presenting: both hands hold the laptop's left side, clear of the swinging corners
+    const push = Math.sin(rotP * Math.PI) * 0.3;
+    const side = i === 0
+      ? new THREE.Vector3(lap.position.x - 1.15, lap.position.y + 0.2, lap.position.z - 0.1 + push)
+      : new THREE.Vector3(lap.position.x - 0.95, lap.position.y + 0.2, lap.position.z - 0.95);
+    hT[i].lerpVectors(key, side, hold);
+  }
+  body.updateWorldMatrix(true, true);
+  aimArm(arms[0], hT[0]); aimArm(arms[1], hT[1]);
+
+  // body life: breathing, bob while typing, lean forward when presenting
+  const breath = Math.sin(time * 2.2);
+  body.scale.set(1 + breath * 0.008, 1 + breath * 0.018, 1);
+  body.position.y = 1.85 + breath * 0.012 + typing * Math.abs(Math.sin(beat * Math.PI * 0.5)) * 0.012;
+  body.rotation.z = Math.sin(time * 0.9) * 0.012 + (rotP > 0.01 ? Math.sin(time * 2.0) * 0.03 * rotP : 0);
+  body.rotation.x = 0.05 * typing + 0.02 * hold; // lean to screen
+  body.rotation.y = rotP * Math.sin(time * 1.4) * 0.05;
+  // blink every ~3.1s
+  const bp = (time % 3.1);
+  const blink = bp > 3.0 ? 0.1 : 1;
+  eyes.forEach(e => e.scale.y = THREE.MathUtils.lerp(e.scale.y, blink, 0.6));
+  // glance toward camera when presenting
+  eyes.forEach((e, i) => e.position.x = (i ? 0.38 : -0.38) + rotP * 0.04);
+
+  // camera: dolly toward the screen during the presentation
+  const c = ease(Math.min(Math.max(rotP, 0), 1));
+  camera.position.lerpVectors(camA.pos, camB.pos, c);
+  camera.position.x += c * 0.2 + Math.sin(time * 0.25) * 0.05;
+  camera.position.y += Math.sin(time * 0.31) * 0.02;
+  tmpL.lerpVectors(camA.look, camB.look, c); tmpL.x += c * 0.1;
+  camera.lookAt(tmpL);
+
+  // screen glow on the mascot while typing (screen faces mascot)
+  screenGlow.position.set(0, lap.position.y + 0.5, lap.position.z - 0.05 + rotP * 0.1);
+  screenGlow.intensity = 1.4 * (1 - rotP);
+
+  if (rotP > 0.02 && rotP < 0.98) sound.whoosh(rotP);
+  else sound.idle();
+}
+
+/* ---------- loop with recursive screen ---------- */
+// Blit: shows the freshly rendered target on the canvas, letter-boxed to 16:9.
+const blitScene = new THREE.Scene();
+const blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const blitMat = new THREE.MeshBasicMaterial({ toneMapped: false });
+const blit = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blitMat);
+blitScene.add(blit);
+function fitBlit() {
+  const a = innerWidth / innerHeight, r = RT_W / RT_H;
+  if (a > r) blit.scale.set(r / a, 1, 1); else blit.scale.set(1, a / r, 1);
+}
+fitBlit();
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); fitBlit(); });
+
+let prev = performance.now();
+let time = parseFloat(new URLSearchParams(location.search).get("t")) || 0;
+renderer.setRenderTarget(rtRead); renderer.setClearColor(0x14110f); renderer.clear(); renderer.setRenderTarget(null);
+
+function frame_() {
+  const now = performance.now(), dt = Math.min((now - prev) / 1000, 0.05); prev = now;
+  time += dt;
+  const t = time % LOOP;
+  update(t, time);
+
+  screenMat.map = rtRead.texture;          // last frame -> screen (the recursion)
+  renderer.setRenderTarget(rtWrite);
+  renderer.render(scene, camera);
+  renderer.setRenderTarget(null);
+  blitMat.map = rtWrite.texture;
+  renderer.render(blitScene, blitCam);
+  [rtRead, rtWrite] = [rtWrite, rtRead];
+  requestAnimationFrame(frame_);
+}
+frame_();
+
+/* ---------- sound (starts after first user gesture; no UI) ---------- */
+function makeSound() {
+  let ctx = null, master = null, noiseBuf = null, whooshNode = null;
+  const start = () => {
+    if (ctx) { if (ctx.state === 'suspended') ctx.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    ctx = new AC(); master = ctx.createGain(); master.gain.value = 0.5; master.connect(ctx.destination);
+    noiseBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    // soft ambient pad
+    for (const f of [110, 164.8, 220]) {
+      const o = ctx.createOscillator(), g = ctx.createGain(); o.type = 'sine'; o.frequency.value = f; g.gain.value = 0.012;
+      o.connect(g).connect(master); o.start();
+    }
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 600; bp.Q.value = 0.7;
+    const g = ctx.createGain(); g.gain.value = 0; src.connect(bp).connect(g).connect(master); src.start();
+    whooshNode = { g, bp };
+  };
+  for (const ev of ['pointerdown', 'keydown', 'touchstart']) addEventListener(ev, start, { passive: true });
+  return {
+    click() {
+      if (!ctx || ctx.state !== 'running') return;
+      const s = ctx.createBufferSource(); s.buffer = noiseBuf;
+      const f = ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 1800 + Math.random() * 1500;
+      const g = ctx.createGain(); const n = ctx.currentTime;
+      g.gain.setValueAtTime(0.18, n); g.gain.exponentialRampToValueAtTime(0.001, n + 0.04);
+      s.connect(f).connect(g).connect(master); s.start(n, Math.random() * 0.5, 0.05);
+    },
+    whoosh(p) { if (whooshNode) { whooshNode.g.gain.value = 0.05 * Math.sin(Math.PI * p); whooshNode.bp.frequency.value = 300 + 700 * p; } },
+    idle() { if (whooshNode) whooshNode.g.gain.value = 0; },
+  };
+}
+</script>
+</body>
+</html>
