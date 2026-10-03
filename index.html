@@ -33,7 +33,7 @@ const makeRT = () => {
   rt.texture.anisotropy = 8;
   return rt;
 };
-let rtRead = makeRT(), rtWrite = makeRT();
+const rtMain = makeRT(), rtInner = makeRT();
 
 /* ---------- scene ---------- */
 const scene = new THREE.Scene();
@@ -117,8 +117,8 @@ box(1.0, 0.06, 1.0, mat(0x222), 0, 0.03, -1.5);
   const shade = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.3, 16, 1, true), new THREE.MeshStandardMaterial({ color: 0xf0a24a, side: THREE.DoubleSide, emissive: 0xf0a24a, emissiveIntensity: 0.6 }));
   shade.position.set(0, 0.95, 0); shade.castShadow = true; lamp.add(shade);
   const pl = new THREE.PointLight(0xffb866, 6, 5, 2); pl.position.set(0, 0.85, 0.05); lamp.add(pl);
-  const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.12, 0.2, 14), mat(0xf4f0e8)); mug.position.set(-1.35, DESK_Y + 0.1, 0.15); mug.castShadow = true; scene.add(mug);
-  box(0.05, 0.1, 0.04, mat(0xf4f0e8), -1.22, DESK_Y + 0.1, 0.15);
+  const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.12, 0.2, 14), mat(0xf4f0e8)); mug.position.set(-1.5, DESK_Y + 0.1, 0.15); mug.castShadow = true; scene.add(mug);
+  box(0.05, 0.1, 0.04, mat(0xf4f0e8), -1.37, DESK_Y + 0.1, 0.15);
 }
 
 // Lights
@@ -186,7 +186,7 @@ const lid = new THREE.Group(); lid.position.set(0, 0.06, 0.53); lid.rotation.x =
 box(1.62, 0.92, 0.05, alu, 0, 0.46, 0, lid);
 // logo on the back of the lid
 box(0.2, 0.14, 0.01, new THREE.MeshStandardMaterial({ color: ORANGE, emissive: ORANGE, emissiveIntensity: 0.5 }), 0, 0.46, 0.03, lid);
-const screenMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false, map: rtRead.texture });
+const screenMat = new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false, map: rtInner.texture });
 const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.844), screenMat);
 screen.rotation.y = Math.PI; screen.position.set(0, 0.47, -0.032); lid.add(screen);
 // bezel
@@ -197,94 +197,130 @@ lap.add(grabL, grabR);
 /* ---------- animation timeline ---------- */
 const ease = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 const sm = (t, a, b) => ease(Math.min(Math.max((t - a) / (b - a), 0), 1));
-const LOOP = 12.2;
-const T = { typeEnd: 3.4, grabEnd: 4.4, turnEnd: 6.2, holdEnd: 8.9, backEnd: 10.7 };
+// macro timeline (seconds): type -> grab -> turn the laptop -> zoom into the screen -> hand over, loop
+const T = { typeEnd: 3.6, grabEnd: 4.4, turnEnd: 6.0, zoomStart: 5.4, loop: 8.2 };
 
-// camera poses
-const camA = { pos: new THREE.Vector3(0, 3.1, 5.2), look: new THREE.Vector3(0, 1.45, -0.5) };
-const camB = { pos: new THREE.Vector3(0, 3.0, 4.0), look: new THREE.Vector3(0, 1.5, 0.1) };
+const camA = { pos: new THREE.Vector3(0.8, 3.0, 5.2), look: new THREE.Vector3(0, 1.45, -0.3) };
+const UP = new THREE.Vector3(0, 1, 0);
+const _m = new THREE.Matrix4(), _qa = new THREE.Quaternion(), _qb = new THREE.Quaternion(), _sq = new THREE.Quaternion();
+const _p = new THREE.Vector3(), _l = new THREE.Vector3(), _c = new THREE.Vector3(), _n = new THREE.Vector3(),
+      _u = new THREE.Vector3(), _o = new THREE.Vector3(), _ax = new THREE.Vector3(), _tp = new THREE.Vector3();
+
+// small, clamped drag-to-look (eases back when released)
+let dragYaw = 0, dragPitch = 0, tYaw = 0, tPitch = 0, dragging = false, lastX = 0, lastY = 0;
+const cv = renderer.domElement; cv.style.touchAction = 'none'; cv.style.cursor = 'grab';
+cv.addEventListener('pointerdown', e => { dragging = true; lastX = e.clientX; lastY = e.clientY; cv.setPointerCapture(e.pointerId); cv.style.cursor = 'grabbing'; });
+cv.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  tYaw = THREE.MathUtils.clamp(tYaw - (e.clientX - lastX) * 0.0006, -0.16, 0.16);
+  tPitch = THREE.MathUtils.clamp(tPitch + (e.clientY - lastY) * 0.0004, -0.06, 0.08);
+  lastX = e.clientX; lastY = e.clientY;
+});
+const endDrag = () => { dragging = false; tYaw = tPitch = 0; cv.style.cursor = 'grab'; };
+cv.addEventListener('pointerup', endDrag); cv.addEventListener('pointercancel', endDrag);
+
+// flying code bits: the clearest "it's typing" cue
+const partGroup = new THREE.Group(); scene.add(partGroup);
+const parts = []; let partIdx = 0;
+{
+  const g = new THREE.BoxGeometry(1, 1, 1);
+  [0xd97757, 0xffffff, 0x7fc4ff, 0xffd36b].forEach(c => { for (let i = 0; i < 10; i++) {
+    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: c })); m.visible = false;
+    m.userData = { life: 0, s: 0.07, vel: new THREE.Vector3() }; partGroup.add(m); parts.push(m);
+  } });
+}
+function spawnPart() {
+  const m = parts[partIdx++ % parts.length], u = m.userData;
+  m.visible = true; u.life = 1; u.s = 0.05 + Math.random() * 0.07;
+  m.position.set(lap.position.x + (Math.random() - 0.5) * 1.1, lap.position.y + 0.95, lap.position.z + 0.65);
+  u.vel.set((Math.random() - 0.5) * 0.6, 1.1 + Math.random() * 0.9, 0.3 + Math.random() * 0.7);
+}
+function stepParts(dt) {
+  for (const m of parts) {
+    if (!m.visible) continue; const u = m.userData; u.life -= dt * 1.1;
+    if (u.life <= 0) { m.visible = false; continue; }
+    u.vel.y -= 1.3 * dt; m.position.addScaledVector(u.vel, dt);
+    m.scale.setScalar(u.s * Math.min(1, u.life * 2)); m.rotation.y += dt * 4; m.rotation.x += dt * 3;
+  }
+}
 
 const hT = [new THREE.Vector3(), new THREE.Vector3()];
-let lastTapSide = -1, tapBeat = -1;
+let tapBeat = -1;
 const sound = makeSound();
 
-function update(t, time) {
-  // phases (0..1 progress values)
-  const grab = sm(t, T.typeEnd, T.grabEnd);          // hands to sides
-  const turn = sm(t, T.grabEnd, T.turnEnd) - sm(t, T.holdEnd, T.backEnd); // 0 home -> 1 shown
-  const release = sm(t, T.backEnd, LOOP);             // hands back to keys
-  const hold = Math.max(0, grab - release);           // how much hands are on the sides
-  const rotP = sm(t, T.grabEnd, T.turnEnd) - sm(t, T.holdEnd, T.backEnd);
+// Sets every object to the pose for macro time t; `time` drives the continuous micro-motion.
+function pose(t, time, live) {
+  const hold = sm(t, T.typeEnd, T.grabEnd);          // hands move to the laptop sides
+  const rotP = sm(t, T.grabEnd, T.turnEnd);          // laptop turns toward the camera
+  const typing = 1 - hold;
 
-  // laptop transform: rotate 180° about Y while lifting and sliding toward camera
-  const arc = Math.sin(Math.PI * Math.min(Math.max(rotP, 0), 1));
-  lap.position.set(LAP_HOME.x + rotP * 0.55, LAP_HOME.y + rotP * 0.28 + arc * 0.2, LAP_HOME.z + rotP * 0.45);
-  // the mascot scoots aside so the screen can be seen with it in frame
-  clawd.position.x = -rotP * 0.85; clawd.rotation.y = rotP * 0.15;
+  lap.position.set(LAP_HOME.x, LAP_HOME.y + rotP * 0.25, LAP_HOME.z + rotP * 0.5);
   lap.rotation.y = rotP * Math.PI;
   lap.scale.setScalar(1 + rotP * 0.22);
-  // lid tilts slightly toward viewer when shown
   lid.rotation.x = 0.42 - rotP * 0.1;
+  clawd.position.z = -1.35 + rotP * 0.3;             // lean in to the desk, no sideways travel
 
-  // typing taps
-  const typing = 1 - hold;
+  // typing: fast alternating key strokes
   const beat = time * 9;
-  const tapIdx = Math.floor(beat);
-  if (typing > 0.9 && tapIdx !== tapBeat) { tapBeat = tapIdx; sound.click(); }
-  const tapA = Math.pow(Math.max(0, Math.sin(beat * Math.PI)), 3);
-  const tapB = Math.pow(Math.max(0, Math.sin(beat * Math.PI + 1.9)), 3);
-  const wob = [Math.sin(time * 5.3) * 0.12, Math.cos(time * 4.1) * 0.12];
+  if (live && typing > 0.9 && Math.floor(beat) !== tapBeat) { tapBeat = Math.floor(beat); sound.click(); spawnPart(); }
+  const tapA = Math.pow(Math.max(0, Math.sin(beat * Math.PI * 0.5)), 2);
+  const tapB = Math.pow(Math.max(0, Math.sin(beat * Math.PI * 0.5 + Math.PI / 2 + 0.6)), 2);
+  const wob = [Math.sin(time * 5.3) * 0.1, Math.cos(time * 4.1) * 0.1];
+  const push = Math.sin(rotP * Math.PI) * 0.3;
 
-  // hand targets: keyboard (typing) vs laptop sides (holding)
   lap.updateWorldMatrix(true, true);
   for (let i = 0; i < 2; i++) {
     const s = i === 0 ? -1 : 1;
-    const key = new THREE.Vector3(s * (0.35 + wob[i] * 0.4), DESK_Y + 0.14 + (i ? tapB : tapA) * -0.05, -0.62 + wob[1 - i] * 0.3);
-    // presenting: both hands hold the laptop's left side, clear of the swinging corners
-    const push = Math.sin(rotP * Math.PI) * 0.3;
-    const side = i === 0
-      ? new THREE.Vector3(lap.position.x - 1.15, lap.position.y + 0.2, lap.position.z - 0.1 + push)
-      : new THREE.Vector3(lap.position.x - 0.95, lap.position.y + 0.2, lap.position.z - 0.95);
+    const key = new THREE.Vector3(s * (0.35 + wob[i]), DESK_Y + 0.22 - (i ? tapB : tapA) * 0.12, -0.55 + wob[1 - i] * 0.5);
+    const side = new THREE.Vector3(s * (0.81 * lap.scale.x + 0.17), lap.position.y + 0.2, lap.position.z - s * push);
     hT[i].lerpVectors(key, side, hold);
   }
   body.updateWorldMatrix(true, true);
   aimArm(arms[0], hT[0]); aimArm(arms[1], hT[1]);
 
-  // body life: breathing, bob while typing, lean forward when presenting
+  // body life: breathing, typing bob and head-nod, blink
   const breath = Math.sin(time * 2.2);
   body.scale.set(1 + breath * 0.008, 1 + breath * 0.018, 1);
-  body.position.y = 1.85 + breath * 0.012 + typing * Math.abs(Math.sin(beat * Math.PI * 0.5)) * 0.012;
-  body.rotation.z = Math.sin(time * 0.9) * 0.012 + (rotP > 0.01 ? Math.sin(time * 2.0) * 0.03 * rotP : 0);
-  body.rotation.x = 0.05 * typing + 0.02 * hold; // lean to screen
-  body.rotation.y = rotP * Math.sin(time * 1.4) * 0.05;
-  // blink every ~3.1s
-  const bp = (time % 3.1);
-  const blink = bp > 3.0 ? 0.1 : 1;
-  eyes.forEach(e => e.scale.y = THREE.MathUtils.lerp(e.scale.y, blink, 0.6));
-  // glance toward camera when presenting
-  eyes.forEach((e, i) => e.position.x = (i ? 0.38 : -0.38) + rotP * 0.04);
+  body.position.y = 1.85 + breath * 0.012 + typing * Math.abs(Math.sin(beat * Math.PI * 0.5)) * 0.03;
+  body.rotation.z = Math.sin(time * 0.9) * 0.012 + typing * Math.sin(beat * Math.PI * 0.5) * 0.02;
+  body.rotation.x = 0.07 * typing + 0.03 * hold;
+  body.rotation.y = 0;
+  const blink = (time % 3.1) > 3.0 ? 0.1 : 1;
+  eyes.forEach(e => { e.scale.y = blink; e.position.y = 0.08 - typing * 0.03; });
 
-  // camera: dolly toward the screen during the presentation
-  const c = ease(Math.min(Math.max(rotP, 0), 1));
-  camera.position.lerpVectors(camA.pos, camB.pos, c);
-  camera.position.x += c * 0.2 + Math.sin(time * 0.25) * 0.05;
-  camera.position.y += Math.sin(time * 0.31) * 0.02;
-  tmpL.lerpVectors(camA.look, camB.look, c); tmpL.x += c * 0.1;
-  camera.lookAt(tmpL);
-
-  // screen glow on the mascot while typing (screen faces mascot)
-  screenGlow.position.set(0, lap.position.y + 0.5, lap.position.z - 0.05 + rotP * 0.1);
-  screenGlow.intensity = 1.4 * (1 - rotP);
-
-  if (rotP > 0.02 && rotP < 0.98) sound.whoosh(rotP);
-  else sound.idle();
+  screenGlow.position.set(0, lap.position.y + 0.5, lap.position.z - 0.05);
+  screenGlow.intensity = 1.6 * (1 - rotP);
+  return rotP;
 }
 
-/* ---------- loop with recursive screen ---------- */
-// Blit: shows the freshly rendered target on the canvas, letter-boxed to 16:9.
+function setMainCamera(time, z) {
+  _p.set(camA.pos.x + Math.sin(time * 0.25) * 0.04, camA.pos.y + Math.sin(time * 0.31) * 0.02, camA.pos.z);
+  _l.copy(camA.look);
+  const w = 1 - z;                                   // drag fades out as we dive into the screen
+  _o.copy(_p).sub(_l).applyAxisAngle(UP, dragYaw * w);
+  _ax.crossVectors(UP, _o).normalize(); _o.applyAxisAngle(_ax, dragPitch * w);
+  _p.copy(_l).add(_o);
+  _m.lookAt(_p, _l, UP); _qa.setFromRotationMatrix(_m);
+  if (z > 0) {
+    // pose that frames the screen exactly edge to edge, front-on
+    scene.updateMatrixWorld();
+    screen.getWorldPosition(_c); screen.getWorldQuaternion(_sq);
+    _n.set(0, 0, 1).applyQuaternion(_sq); _u.set(0, 1, 0).applyQuaternion(_sq);
+    const d = (0.844 * lap.scale.x / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    _tp.copy(_c).addScaledVector(_n, d);
+    _m.lookAt(_tp, _c, _u); _qb.setFromRotationMatrix(_m);
+    _p.lerp(_tp, z); _qa.slerp(_qb, z);
+  }
+  camera.position.copy(_p); camera.quaternion.copy(_qa);
+}
+
+/* ---------- render loop ---------- */
+// Pass 1 renders the scene at the START of the loop (typing) into rtInner.
+// Pass 2 renders the real timeline, with rtInner on the laptop screen. The camera zooms
+// until the screen fills the frame; the loop then restarts on exactly that image.
 const blitScene = new THREE.Scene();
 const blitCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-const blitMat = new THREE.MeshBasicMaterial({ toneMapped: false });
+const blitMat = new THREE.MeshBasicMaterial({ toneMapped: false, map: rtMain.texture });
 const blit = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), blitMat);
 blitScene.add(blit);
 function fitBlit() {
@@ -295,22 +331,31 @@ fitBlit();
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); fitBlit(); });
 
 let prev = performance.now();
-let time = parseFloat(new URLSearchParams(location.search).get("t")) || 0;
-renderer.setRenderTarget(rtRead); renderer.setClearColor(0x14110f); renderer.clear(); renderer.setRenderTarget(null);
+let time = parseFloat(new URLSearchParams(location.search).get('t')) || 0;
+let macro = time % T.loop;
 
 function frame_() {
   const now = performance.now(), dt = Math.min((now - prev) / 1000, 0.05); prev = now;
-  time += dt;
-  const t = time % LOOP;
-  update(t, time);
+  time += dt; macro += dt;
+  if (macro >= T.loop) macro -= T.loop;               // hand-over: identical to the zoomed-in image
+  const k = 1 - Math.exp(-dt * 6);
+  dragYaw += (tYaw - dragYaw) * k; dragPitch += (tPitch - dragPitch) * k;
 
-  screenMat.map = rtRead.texture;          // last frame -> screen (the recursion)
-  renderer.setRenderTarget(rtWrite);
-  renderer.render(scene, camera);
+  // pass 1: inner image
+  partGroup.visible = false; screen.visible = false;
+  pose(0, time, false);
+  { const y = dragYaw, pch = dragPitch; dragYaw = dragPitch = 0; setMainCamera(time, 0); dragYaw = y; dragPitch = pch; } // ignore drag so the hand-over matches
+  renderer.setRenderTarget(rtInner); renderer.render(scene, camera);
+
+  // pass 2: real timeline
+  partGroup.visible = true; screen.visible = true; stepParts(dt);
+  const rotP = pose(macro, time, true);
+  setMainCamera(time, sm(macro, T.zoomStart, T.loop));
+  if (rotP > 0.02 && rotP < 0.98) sound.whoosh(rotP); else sound.idle();
+  renderer.setRenderTarget(rtMain); renderer.render(scene, camera);
+
   renderer.setRenderTarget(null);
-  blitMat.map = rtWrite.texture;
   renderer.render(blitScene, blitCam);
-  [rtRead, rtWrite] = [rtWrite, rtRead];
   requestAnimationFrame(frame_);
 }
 frame_();
